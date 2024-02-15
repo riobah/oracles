@@ -77,6 +77,8 @@ impl Server {
 
         let iot_config_client = IotConfigClient::from_settings(&settings.iot_config_client)?;
 
+        // create the witness updater to handle serialization of last witness updates to db
+        // also exposes a cache of the last witness updates
         let (witness_updater_cache, witness_updater_sender, witness_updater_server) =
             WitnessUpdater::new(pool.clone()).await?;
 

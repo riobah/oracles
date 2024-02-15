@@ -101,10 +101,10 @@ impl LastWitness {
         const NUMBER_OF_FIELDS_IN_QUERY: u16 = 2;
         const MAX_BATCH_ENTRIES: usize = (u16::MAX / NUMBER_OF_FIELDS_IN_QUERY) as usize;
         let mut txn = db.begin().await?;
-        for update in ids.chunks(MAX_BATCH_ENTRIES) {
+        for updates in ids.chunks(MAX_BATCH_ENTRIES) {
             let mut query_builder: sqlx::QueryBuilder<sqlx::Postgres> =
                 sqlx::QueryBuilder::new(" insert into last_witness (id, timestamp) ");
-            query_builder.push_values(update, |mut builder, last_witness| {
+            query_builder.push_values(updates, |mut builder, last_witness| {
                 builder
                     .push_bind(last_witness.id.as_ref())
                     .push_bind(last_witness.timestamp);

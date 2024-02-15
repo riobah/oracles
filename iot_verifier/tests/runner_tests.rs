@@ -809,8 +809,6 @@ async fn valid_new_gateway_witness_first_reciprocity(pool: PgPool) -> anyhow::Re
     common::inject_beacon_report(pool.clone(), beacon_to_inject.clone()).await?;
     common::inject_witness_report(pool.clone(), witness_to_inject.clone()).await?;
 
-    // tokio::time::sleep(Duration::from_secs(5)).await;
-
     ctx.runner.handle_db_tick().await?;
 
     let valid_poc = ctx.valid_pocs.receive_valid_poc().await;

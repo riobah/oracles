@@ -31,12 +31,14 @@ use rust_decimal_macros::dec;
 use sqlx::PgPool;
 use std::{sync::Arc, time::Duration};
 use task_manager::ManagedTask;
-use tokio::sync::Mutex;
-use tokio::time::{self, MissedTickBehavior};
+use tokio::{
+    sync::Mutex,
+    time::{self, MissedTickBehavior},
+};
 
 /// the cadence in seconds at which the DB is polled for ready POCs
 const DB_POLL_TIME: Duration = Duration::from_secs(30);
-const BEACON_WORKERS: usize = 50;
+const BEACON_WORKERS: usize = 100;
 
 const WITNESS_REDUNDANCY: u32 = 4;
 const POC_REWARD_DECAY_RATE: Decimal = dec!(0.8);
@@ -375,7 +377,7 @@ where
                     )
                     .await?;
 
-                    // update the last witness timestamp for any witness which has successfully passed regular validations
+                    // send a list of gateways which require their last witness timestamp to be updated
                     self.witness_updater_sender
                         .send(verified_witnesses_result.witnesses_to_update)
                         .await?;

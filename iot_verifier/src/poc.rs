@@ -385,37 +385,24 @@ impl Poc {
         &self,
         witness_updater_cache: Arc<Mutex<WitnessMap>>,
     ) -> anyhow::Result<bool> {
-        let last_witness = self
-            .get_last_witness(witness_updater_cache, &self.beacon_report.report.pub_key)
-            .await?;
-        if let Some(last_witness) = last_witness {
-            if self.beacon_report.received_timestamp - last_witness.timestamp < *RECIPROCITY_WINDOW
-            {
-                return Ok(true);
-            }
+        let last_witness = match witness_updater_cache
+            .lock()
+            .await
+            .get(&self.beacon_report.report.pub_key)
+        {
+            Some(witness) => Some(witness.clone()),
+            None => LastWitness::get(&self.pool, &self.beacon_report.report.pub_key).await?,
         };
-        Ok(false)
+        Ok(last_witness.map_or(false, |lw| {
+            self.beacon_report.received_timestamp - lw.timestamp < *RECIPROCITY_WINDOW
+        }))
     }
 
     async fn verify_witness_reciprocity(&self, pubkey: &PublicKeyBinary) -> anyhow::Result<bool> {
         let last_beacon = LastBeacon::get(&self.pool, pubkey).await?;
-        if let Some(last_beacon) = last_beacon {
-            if self.beacon_report.received_timestamp - last_beacon.timestamp < *RECIPROCITY_WINDOW {
-                return Ok(true);
-            }
-        };
-        Ok(false)
-    }
-
-    pub async fn get_last_witness(
-        &self,
-        witness_updater_cache: Arc<Mutex<WitnessMap>>,
-        pubkey: &PublicKeyBinary,
-    ) -> anyhow::Result<Option<LastWitness>> {
-        match witness_updater_cache.lock().await.get(pubkey) {
-            Some(witness) => Ok(Some(witness.clone())),
-            None => Ok(LastWitness::get(&self.pool, pubkey).await?),
-        }
+        Ok(last_beacon.map_or(false, |lw| {
+            self.beacon_report.received_timestamp - lw.timestamp < *RECIPROCITY_WINDOW
+        }))
     }
 }
 
