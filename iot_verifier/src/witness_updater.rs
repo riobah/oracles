@@ -3,8 +3,7 @@ use futures::future::LocalBoxFuture;
 use futures_util::TryFutureExt;
 use helium_crypto::PublicKeyBinary;
 use sqlx::PgPool;
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use task_manager::ManagedTask;
 use tokio::{
     sync::mpsc,
