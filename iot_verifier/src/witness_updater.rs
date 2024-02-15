@@ -11,7 +11,8 @@ use tokio::{
     time::{self, timeout, MissedTickBehavior},
 };
 
-const CHECK_INTERVAL: time::Duration = time::Duration::from_secs(10);
+const WRITE_INTERVAL: time::Duration = time::Duration::from_secs(60);
+const CHECK_INTERVAL: time::Duration = time::Duration::from_secs(5);
 pub type WitnessMap = HashMap<PublicKeyBinary, LastWitness>;
 
 pub type MessageSender = mpsc::Sender<Vec<LastWitness>>;
@@ -58,25 +59,24 @@ impl WitnessUpdater {
         tracing::info!("starting witness updater process");
         let mut check_timer = time::interval(CHECK_INTERVAL);
         check_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut write_timer = time::interval(WRITE_INTERVAL);
+        write_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-        let mut branch = true;
         loop {
             tokio::select! {
                 biased;
                 _ = shutdown.clone() => break,
                 _ = check_timer.tick() => {
-                    if branch {
                         tracing::info!("checking for updates");
                         while let Some(update) = self.check_for_updates().await {
                             self.update_cache(update).await;
                         }
-                    } else {
-                        tracing::info!("writing witness cache to db");
-                        self.write_cache().await?;
-                    }
+                }
+                _ = write_timer.tick() => {
+                    tracing::info!("writing witness cache to db");
+                    self.write_cache().await?;
                 }
             }
-            branch = !branch;
         }
         tracing::info!("stopping witness updater process");
         Ok(())
