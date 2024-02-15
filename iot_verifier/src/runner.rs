@@ -5,7 +5,9 @@ use crate::{
     poc_report::Report,
     region_cache::RegionCache,
     reward_share::GatewayPocShare,
-    telemetry, Settings,
+    telemetry,
+    witness_updater::{MessageSender as WitnessUpdaterMessageSender, WitnessMap},
+    Settings,
 };
 use chrono::{Duration as ChronoDuration, Utc};
 use denylist::DenyList;
@@ -27,13 +29,14 @@ use iot_config::client::Gateways;
 use rust_decimal::{Decimal, MathematicalOps};
 use rust_decimal_macros::dec;
 use sqlx::PgPool;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 use task_manager::ManagedTask;
+use tokio::sync::Mutex;
 use tokio::time::{self, MissedTickBehavior};
 
 /// the cadence in seconds at which the DB is polled for ready POCs
 const DB_POLL_TIME: Duration = Duration::from_secs(30);
-const BEACON_WORKERS: usize = 100;
+const BEACON_WORKERS: usize = 50;
 
 const WITNESS_REDUNDANCY: u32 = 4;
 const POC_REWARD_DECAY_RATE: Decimal = dec!(0.8);
@@ -54,6 +57,8 @@ pub struct Runner<G> {
     pub invalid_witness_sink: FileSinkClient,
     pub poc_sink: FileSinkClient,
     pub hex_density_map: HexDensityMap,
+    pub witness_updater_sender: WitnessUpdaterMessageSender,
+    pub witness_updater_cache: Arc<Mutex<WitnessMap>>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -98,6 +103,8 @@ where
         invalid_witness_sink: FileSinkClient,
         poc_sink: FileSinkClient,
         hex_density_map: HexDensityMap,
+        witness_updater_sender: WitnessUpdaterMessageSender,
+        witness_updater_cache: Arc<Mutex<WitnessMap>>,
     ) -> anyhow::Result<Self> {
         let beacon_interval = settings.beacon_interval()?;
         let max_witnesses_per_poc = settings.max_witnesses_per_poc;
@@ -134,6 +141,8 @@ where
             invalid_witness_sink,
             poc_sink,
             hex_density_map,
+            witness_updater_sender,
+            witness_updater_cache,
         })
     }
 
@@ -268,6 +277,7 @@ where
                 &self.gateway_cache,
                 &self.region_cache,
                 &self.deny_list,
+                self.witness_updater_cache.clone(),
             )
             .await?;
         match beacon_verify_result.result {
@@ -364,6 +374,11 @@ where
                         unselected_witnesses,
                     )
                     .await?;
+
+                    // update the last witness timestamp for any witness which has successfully passed regular validations
+                    self.witness_updater_sender
+                        .send(verified_witnesses_result.witnesses_to_update)
+                        .await?;
                 }
             }
             VerificationStatus::Invalid => {

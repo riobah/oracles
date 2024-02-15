@@ -1,7 +1,7 @@
 use crate::{
     entropy::ENTROPY_LIFESPAN, gateway_cache::GatewayCache, gateway_cache::GatewayCacheError,
     hex_density::HexDensityMap, last_beacon::LastBeacon, last_witness::LastWitness,
-    region_cache::RegionCache,
+    region_cache::RegionCache, witness_updater::WitnessMap,
 };
 use beacon;
 use chrono::{DateTime, Duration, DurationRound, Utc};
@@ -26,9 +26,10 @@ use iot_config::{
 use lazy_static::lazy_static;
 use rust_decimal::Decimal;
 use sqlx::PgPool;
-use std::f64::consts::PI;
+use std::{f64::consts::PI, sync::Arc};
+use tokio::sync::Mutex;
 
-pub type GenericVerifyResult<T = ()> = std::result::Result<T, InvalidResponse>;
+pub type GenericVerifyResult<T = ()> = Result<T, InvalidResponse>;
 
 /// C is the speed of light in air in meters per second
 pub const C: f64 = 2.998e8;
@@ -85,6 +86,7 @@ pub struct VerifyBeaconResult {
 pub struct VerifyWitnessesResult {
     pub verified_witnesses: Vec<IotVerifiedWitnessReport>,
     pub failed_witnesses: Vec<IotWitnessIngestReport>,
+    pub witnesses_to_update: Vec<LastWitness>,
 }
 
 impl Poc {
@@ -114,6 +116,7 @@ impl Poc {
         gateway_cache: &GatewayCache,
         region_cache: &RegionCache<G>,
         deny_list: &DenyList,
+        witness_updater_cache: Arc<Mutex<WitnessMap>>,
     ) -> anyhow::Result<VerifyBeaconResult>
     where
         G: Gateways,
@@ -146,7 +149,7 @@ impl Poc {
             Err(err) => return Err(anyhow::Error::from(err)),
         };
         // we have beaconer info, proceed to verifications
-        let last_beacon = LastBeacon::get(&self.pool, beaconer_pub_key.as_ref()).await?;
+        let last_beacon = LastBeacon::get(&self.pool, &beaconer_pub_key).await?;
         match do_beacon_verifications(
             deny_list,
             self.entropy_start,
@@ -166,14 +169,17 @@ impl Poc {
                 // update 'last beacon' timestamp if the beacon has passed regular validations
                 LastBeacon::update_last_timestamp(
                     &self.pool,
-                    beaconer_pub_key.as_ref(),
+                    &beaconer_pub_key,
                     self.beacon_report.received_timestamp,
                 )
                 .await?;
                 // post regular validations, check for beacon reciprocity
                 // if this check fails we will invalidate the beacon
                 // even tho it has passed all regular validations
-                if !self.verify_beacon_reciprocity().await? {
+                if !self
+                    .verify_beacon_reciprocity(witness_updater_cache)
+                    .await?
+                {
                     Ok(VerifyBeaconResult::invalid(
                         InvalidReason::GatewayNoValidWitnesses,
                         None,
@@ -198,7 +204,7 @@ impl Poc {
         gateway_cache: &GatewayCache,
         deny_list: &DenyList,
     ) -> anyhow::Result<VerifyWitnessesResult> {
-        let mut witnesses_to_update: Vec<(PublicKeyBinary, DateTime<Utc>)> = Vec::new();
+        let mut witnesses_to_update: Vec<LastWitness> = Vec::new();
         let mut verified_witnesses: Vec<IotVerifiedWitnessReport> = Vec::new();
         let mut failed_witnesses: Vec<IotWitnessIngestReport> = Vec::new();
         let mut existing_gateways: Vec<PublicKeyBinary> = Vec::new();
@@ -228,10 +234,11 @@ impl Poc {
                             existing_gateways.push(verified_witness.report.pub_key.clone());
                             if verified_witness.status == VerificationStatus::Valid {
                                 // add to list of witness to update last timestamp off
-                                witnesses_to_update.push((
-                                    witness_report.report.pub_key.clone(),
-                                    verified_witness.received_timestamp,
-                                ));
+                                witnesses_to_update.push(LastWitness {
+                                    id: witness_report.report.pub_key.clone(),
+                                    timestamp: verified_witness.received_timestamp,
+                                });
+
                                 // post regular validations, check for witness reciprocity
                                 // if this check fails we will invalidate the witness
                                 // even tho it has passed all regular validations
@@ -268,14 +275,10 @@ impl Poc {
             }
         }
 
-        // update the last witness timestamp for any witness which has successfully passed regular validations
-        if !witnesses_to_update.is_empty() {
-            LastWitness::bulk_update_last_timestamps(&self.pool, witnesses_to_update).await?
-        };
-
         let resp = VerifyWitnessesResult {
             verified_witnesses,
             failed_witnesses,
+            witnesses_to_update,
         };
         Ok(resp)
     }
@@ -378,9 +381,13 @@ impl Poc {
         }
     }
 
-    async fn verify_beacon_reciprocity(&self) -> anyhow::Result<bool> {
-        let last_witness =
-            LastWitness::get(&self.pool, self.beacon_report.report.pub_key.as_ref()).await?;
+    async fn verify_beacon_reciprocity(
+        &self,
+        witness_updater_cache: Arc<Mutex<WitnessMap>>,
+    ) -> anyhow::Result<bool> {
+        let last_witness = self
+            .get_last_witness(witness_updater_cache, &self.beacon_report.report.pub_key)
+            .await?;
         if let Some(last_witness) = last_witness {
             if self.beacon_report.received_timestamp - last_witness.timestamp < *RECIPROCITY_WINDOW
             {
@@ -391,13 +398,24 @@ impl Poc {
     }
 
     async fn verify_witness_reciprocity(&self, pubkey: &PublicKeyBinary) -> anyhow::Result<bool> {
-        let last_beacon = LastBeacon::get(&self.pool, pubkey.as_ref()).await?;
+        let last_beacon = LastBeacon::get(&self.pool, pubkey).await?;
         if let Some(last_beacon) = last_beacon {
             if self.beacon_report.received_timestamp - last_beacon.timestamp < *RECIPROCITY_WINDOW {
                 return Ok(true);
             }
         };
         Ok(false)
+    }
+
+    pub async fn get_last_witness(
+        &self,
+        witness_updater_cache: Arc<Mutex<WitnessMap>>,
+        pubkey: &PublicKeyBinary,
+    ) -> anyhow::Result<Option<LastWitness>> {
+        match witness_updater_cache.lock().await.get(pubkey) {
+            Some(witness) => Ok(Some(witness.clone())),
+            None => Ok(LastWitness::get(&self.pool, pubkey).await?),
+        }
     }
 }
 
@@ -1212,14 +1230,13 @@ mod tests {
 
     #[test]
     fn test_verify_beacon_schedule() {
-        let id: &str = "test_id";
         let beacon_interval = Duration::seconds(21600); // 6 hours
         let last_beacon_ts: DateTime<Utc> =
             DateTime::parse_from_str("2023 Jan 02 00:00:01 +0000", "%Y %b %d %H:%M:%S %z")
                 .unwrap()
                 .into();
         let last_beacon = Some(LastBeacon {
-            id: id.as_bytes().to_vec(),
+            id: PublicKeyBinary::from_str(PUBKEY1).unwrap(),
             timestamp: last_beacon_ts,
         });
         // beacon is in a later bucket ( by one hour) after last beacon, expectation pass
@@ -1648,7 +1665,7 @@ mod tests {
         // test schedule verification is active in the beacon validation list
         let beacon_report3 = valid_beacon_report(PUBKEY1, entropy_start + Duration::minutes(2));
         let last_beacon3 = LastBeacon {
-            id: vec![],
+            id: PublicKeyBinary::from_str(PUBKEY1).unwrap(),
             timestamp: Utc::now() - Duration::hours(5),
         };
         let resp3 = do_beacon_verifications(
