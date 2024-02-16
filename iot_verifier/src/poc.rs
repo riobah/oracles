@@ -1,7 +1,6 @@
 use crate::{
     entropy::ENTROPY_LIFESPAN,
-    gateway_cache::GatewayCache,
-    gateway_cache::GatewayCacheError,
+    gateway_cache::{GatewayCache, GatewayCacheError},
     hex_density::HexDensityMap,
     last_beacon::LastBeacon,
     last_witness::LastWitness,

@@ -8,7 +8,7 @@ use task_manager::ManagedTask;
 use tokio::{
     sync::mpsc,
     sync::Mutex,
-    time::{self, timeout, Duration, MissedTickBehavior},
+    time::{self, MissedTickBehavior},
 };
 
 const WRITE_INTERVAL: time::Duration = time::Duration::from_secs(60);
