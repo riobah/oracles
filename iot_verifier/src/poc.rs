@@ -246,10 +246,7 @@ impl Poc {
                                 // post regular validations, check for witness reciprocity
                                 // if this check fails we will invalidate the witness
                                 // even tho it has passed all regular validations
-                                if !self
-                                    .verify_witness_reciprocity(&witness_report)
-                                    .await?
-                                {
+                                if !self.verify_witness_reciprocity(&witness_report).await? {
                                     verified_witness.status = VerificationStatus::Invalid;
                                     verified_witness.invalid_reason =
                                         InvalidReason::GatewayNoValidBeacons;
@@ -404,7 +401,10 @@ impl Poc {
         }))
     }
 
-    async fn verify_witness_reciprocity(&self, report: &IotWitnessIngestReport) -> anyhow::Result<bool> {
+    async fn verify_witness_reciprocity(
+        &self,
+        report: &IotWitnessIngestReport,
+    ) -> anyhow::Result<bool> {
         let last_beacon = LastBeacon::get(&self.pool, &report.report.pub_key).await?;
         Ok(last_beacon.map_or(false, |lw| {
             report.received_timestamp - lw.timestamp < *RECIPROCITY_WINDOW
