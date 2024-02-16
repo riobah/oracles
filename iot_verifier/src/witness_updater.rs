@@ -8,7 +8,7 @@ use task_manager::ManagedTask;
 use tokio::{
     sync::mpsc,
     sync::Mutex,
-    time::{self, timeout, MissedTickBehavior},
+    time::{self, timeout, Duration, MissedTickBehavior},
 };
 
 const WRITE_INTERVAL: time::Duration = time::Duration::from_secs(60);
@@ -43,7 +43,7 @@ impl WitnessUpdater {
         pool: PgPool,
     ) -> anyhow::Result<(Arc<Mutex<WitnessMap>>, MessageSender, Self)> {
         let cache = Arc::new(Mutex::new(WitnessMap::new()));
-        let (sender, receiver) = mpsc::channel(5000);
+        let (sender, receiver) = mpsc::channel(500);
         Ok((
             cache.clone(),
             sender,
@@ -61,19 +61,20 @@ impl WitnessUpdater {
         check_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
         let mut write_timer = time::interval(WRITE_INTERVAL);
         write_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
-
         loop {
             tokio::select! {
                 biased;
                 _ = shutdown.clone() => break,
                 _ = check_timer.tick() => {
-                        tracing::info!("checking for updates");
+                        let mut buf = vec![];
                         while let Some(update) = self.check_for_updates().await {
-                            self.update_cache(update).await;
+                            buf.push(update);
                         }
-                }
+                        if !buf.is_empty() {
+                            self.update_cache(buf.concat()).await;
+                        }
+                    }
                 _ = write_timer.tick() => {
-                    tracing::info!("writing witness cache to db");
                     self.write_cache().await?;
                 }
             }
@@ -81,18 +82,19 @@ impl WitnessUpdater {
         tracing::info!("stopping witness updater process");
         Ok(())
     }
+
     pub async fn check_for_updates(&mut self) -> Option<Vec<LastWitness>> {
-        match timeout(time::Duration::from_secs(2), self.receiver.recv()).await {
-            Ok(Some(update)) => Some(update),
-            Ok(None) => None,
-            Err(_) => None,
-        }
+        timeout(Duration::from_secs(2), self.receiver.recv())
+            .await
+            .ok()
+            .flatten()
     }
 
     pub async fn write_cache(&mut self) -> anyhow::Result<()> {
         let mut cache = self.cache.lock().await;
         if !cache.is_empty() {
             let updates = cache.values().collect::<Vec<_>>();
+            tracing::info!("writing {} updates to db", updates.len());
             LastWitness::bulk_update_last_timestamps(&self.pool, updates).await?;
             cache.clear();
         }
@@ -100,8 +102,10 @@ impl WitnessUpdater {
     }
 
     pub async fn update_cache(&mut self, updates: Vec<LastWitness>) {
-        for update in updates {
-            self.cache.lock().await.insert(update.id.clone(), update);
-        }
+        tracing::info!("updating cache with {} entries", updates.len());
+        let mut cache = self.cache.lock().await;
+        updates.into_iter().for_each(|update| {
+            cache.insert(update.id.clone(), update);
+        });
     }
 }

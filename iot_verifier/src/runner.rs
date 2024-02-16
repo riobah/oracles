@@ -292,6 +292,7 @@ where
                             &self.hex_density_map,
                             &self.gateway_cache,
                             &self.deny_list,
+                            self.witness_updater_sender.clone(),
                         )
                         .await?;
 
@@ -376,11 +377,6 @@ where
                         unselected_witnesses,
                     )
                     .await?;
-
-                    // send a list of gateways which require their last witness timestamp to be updated
-                    self.witness_updater_sender
-                        .send(verified_witnesses_result.witnesses_to_update)
-                        .await?;
                 }
             }
             VerificationStatus::Invalid => {

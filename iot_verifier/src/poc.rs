@@ -1,7 +1,12 @@
 use crate::{
-    entropy::ENTROPY_LIFESPAN, gateway_cache::GatewayCache, gateway_cache::GatewayCacheError,
-    hex_density::HexDensityMap, last_beacon::LastBeacon, last_witness::LastWitness,
-    region_cache::RegionCache, witness_updater::WitnessMap,
+    entropy::ENTROPY_LIFESPAN,
+    gateway_cache::GatewayCache,
+    gateway_cache::GatewayCacheError,
+    hex_density::HexDensityMap,
+    last_beacon::LastBeacon,
+    last_witness::LastWitness,
+    region_cache::RegionCache,
+    witness_updater::{MessageSender as WitnessUpdaterMessageSender, WitnessMap},
 };
 use beacon;
 use chrono::{DateTime, Duration, DurationRound, Utc};
@@ -86,7 +91,6 @@ pub struct VerifyBeaconResult {
 pub struct VerifyWitnessesResult {
     pub verified_witnesses: Vec<IotVerifiedWitnessReport>,
     pub failed_witnesses: Vec<IotWitnessIngestReport>,
-    pub witnesses_to_update: Vec<LastWitness>,
 }
 
 impl Poc {
@@ -203,6 +207,7 @@ impl Poc {
         hex_density_map: &HexDensityMap,
         gateway_cache: &GatewayCache,
         deny_list: &DenyList,
+        witness_updater_sender: WitnessUpdaterMessageSender,
     ) -> anyhow::Result<VerifyWitnessesResult> {
         let mut witnesses_to_update: Vec<LastWitness> = Vec::new();
         let mut verified_witnesses: Vec<IotVerifiedWitnessReport> = Vec::new();
@@ -275,10 +280,12 @@ impl Poc {
             }
         }
 
+        // send a list of gateways which require their last witness timestamp to be updated
+        witness_updater_sender.send(witnesses_to_update).await?;
+
         let resp = VerifyWitnessesResult {
             verified_witnesses,
             failed_witnesses,
-            witnesses_to_update,
         };
         Ok(resp)
     }
