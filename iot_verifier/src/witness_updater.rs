@@ -12,8 +12,8 @@ use tokio::{
 };
 
 const WRITE_INTERVAL: time::Duration = time::Duration::from_secs(60);
-pub type WitnessMap = HashMap<PublicKeyBinary, LastWitness>;
 
+pub type WitnessMap = HashMap<PublicKeyBinary, LastWitness>;
 pub type MessageSender = mpsc::Sender<Vec<LastWitness>>;
 pub type MessageReceiver = mpsc::Receiver<Vec<LastWitness>>;
 
@@ -74,13 +74,6 @@ impl WitnessUpdater {
         }
         tracing::info!("stopping witness updater process");
         Ok(())
-    }
-
-    pub async fn check_for_updates(&mut self) -> Option<Vec<LastWitness>> {
-        timeout(Duration::from_secs(2), self.receiver.recv())
-            .await
-            .ok()
-            .flatten()
     }
 
     pub async fn write_cache(&mut self) -> anyhow::Result<()> {
